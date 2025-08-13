@@ -58,7 +58,22 @@ class ToolingHandler(BaseHandler):
             
             # Format output using OutputFormatter for clean display
             formatted_content = OutputFormatter.format_command_result(command, exit_code, stdout, stderr)
-            return AgentResponse(success=(exit_code==0), content=formatted_content, status_update='completed' if exit_code==0 else 'failed', artifacts_created={'sandbox_path': str(tmpdir)})
+            
+            # Enhanced failure detection - not just exit code
+            has_error_indicators = stderr and any(
+                indicator in stderr.lower() 
+                for indicator in ['error:', 'invalid', 'command not found', 'usage:', 'illegal option', 'invalid option']
+            )
+            
+            # Command is successful if exit code is 0 AND no error indicators
+            is_success = (exit_code == 0) and not has_error_indicators
+            
+            return AgentResponse(
+                success=is_success, 
+                content=formatted_content, 
+                status_update='completed' if is_success else 'failed', 
+                artifacts_created={'sandbox_path': str(tmpdir), 'exit_code': exit_code, 'has_stderr': bool(stderr.strip())}
+            )
         except subprocess.TimeoutExpired:
             return AgentResponse(success=False, content='Command timed out.', status_update='timeout')
         except Exception as e:

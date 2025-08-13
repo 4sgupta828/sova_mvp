@@ -61,8 +61,32 @@ class SovereignAgent:
                 # Save flight recorder entry
                 self.state.save_flight_record()
                 if not response.success:
-                    print("Plan execution halted due to a failed step.")
-                    break
+                    print(f"🔄 Step failed. Attempting recovery...")
+                    
+                    # Try to recover by creating a recovery plan
+                    recovery_context = f"Previous command failed: {step.step_goal}\nError output: {response.content}\nOriginal user request: {plan.overall_goal}"
+                    recovery_prompt = f"The previous step failed. Please create a corrected plan to accomplish the original goal. Learn from this error: {recovery_context}"
+                    
+                    # Add recovery context to conversation history
+                    self.state.add_to_history("system", f"Step failed: {step.step_goal}. Error: {response.content}")
+                    self.state.add_to_history("system", "Attempting automatic recovery...")
+                    
+                    # Generate recovery plan
+                    recovery_plan = self.cognitive_core.orchestrate(recovery_prompt, self.state)
+                    
+                    if recovery_plan and recovery_plan.steps:
+                        print(f"🛠️ Recovery plan:")
+                        print(f"Goal: {recovery_plan.overall_goal}")
+                        for j, recovery_step in enumerate(recovery_plan.steps):
+                            print(f"  {j+1}. {recovery_step.step_goal} (using {recovery_step.handler_name})")
+                        
+                        # Execute recovery plan
+                        print("\n🚀 Executing recovery plan...")
+                        self._execute_plan(recovery_plan)
+                        break  # Exit original plan after recovery attempt
+                    else:
+                        print("❌ Could not generate recovery plan. Halting execution.")
+                        break
             except KeyboardInterrupt:
                 print("Execution interrupted by user.")
                 break
