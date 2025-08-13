@@ -5,8 +5,21 @@ from sovereign_agent.core.models import TaskPlan, HandlerStepModel
 import importlib
 import pkgutil
 import sys
+import os
 from typing import Dict
 from sovereign_agent.handlers.base import BaseHandler
+
+# Import readline for command history and line editing
+try:
+    import readline
+    READLINE_AVAILABLE = True
+except ImportError:
+    # On Windows, try pyreadline3
+    try:
+        import pyreadline3 as readline
+        READLINE_AVAILABLE = True
+    except ImportError:
+        READLINE_AVAILABLE = False
 
 def discover_handlers():
     handlers = {}
@@ -41,9 +54,68 @@ class SovereignAgent:
         print(f"Registered handlers: {list(self.handlers.keys())}")
 
         self.cognitive_core = CognitiveCore(list(self.handlers.values()))
+        
+        # Set up readline for command history and line editing
+        self._setup_readline()
+
+    def _setup_readline(self):
+        """Set up readline for command history and line editing."""
+        if not READLINE_AVAILABLE:
+            print("Note: Command history not available. Install 'pyreadline3' on Windows for better experience.")
+            return
+            
+        # Set up history file
+        self.history_file = os.path.expanduser("~/.sovereign_agent_history")
+        
+        try:
+            # Load existing history
+            readline.read_history_file(self.history_file)
+        except (FileNotFoundError, PermissionError):
+            pass  # No history file yet, that's fine
+        
+        # Configure history
+        readline.set_history_length(100)  # Keep last 100 commands
+        
+        # Set up basic tab completion for common commands
+        readline.set_completer(self._completer)
+        readline.parse_and_bind('tab: complete')
+        
+        # Enable standard readline key bindings
+        readline.parse_and_bind('set editing-mode emacs')  # Use emacs-style key bindings
+        
+    def _completer(self, text, state):
+        """Simple tab completion for common commands."""
+        common_commands = [
+            'list', 'search', 'find', 'run', 'test', 'build', 'compile',
+            'show', 'display', 'check', 'analyze', 'create', 'delete',
+            'help', 'exit', 'quit'
+        ]
+        
+        matches = [cmd for cmd in common_commands if cmd.startswith(text.lower())]
+        
+        if state < len(matches):
+            return matches[state]
+        return None
+        
+    def _save_history(self):
+        """Save command history to file."""
+        if READLINE_AVAILABLE:
+            try:
+                readline.write_history_file(self.history_file)
+            except (PermissionError, OSError):
+                pass  # Can't save history, but don't crash
+    
+    def _format_help_text(self, text: str) -> str:
+        """Format help text with subtle styling."""
+        return f"\033[2m{text}\033[0m"  # Dim text
+    
 
     def _execute_plan(self, plan: TaskPlan):
         print(f"\nExecuting Plan: {plan.overall_goal}")
+        
+        # Collect context from previous steps
+        step_context = {}
+        
         for i, step in enumerate(plan.steps):
             print(f"\n--- Step {i+1}/{len(plan.steps)}: {step.handler_name} ---")
             print(f"Goal: {step.step_goal}")
@@ -53,40 +125,40 @@ class SovereignAgent:
                 continue
             try:
                 step.status = "running"
-                response = handler.execute(step.step_goal, step.input_args, self.state)
+                
+                # Add context from previous steps to input args
+                enhanced_args = step.input_args.copy()
+                enhanced_args["__step_context"] = step_context
+                enhanced_args["__previous_results"] = [
+                    {"step_goal": prev_step.step_goal, "result": prev_step.result}
+                    for prev_step in plan.steps[:i] if prev_step.result
+                ]
+                
+                response = handler.execute(step.step_goal, enhanced_args, self.state)
                 step.result = response
+                
+                # Store step result in context for next steps
+                if response.success:
+                    step_context[f"step_{i+1}_result"] = response.content
+                    step_context[f"step_{i+1}_artifacts"] = response.artifacts_created
                 step.status = "completed" if response.success else "failed"
                 print(f"✅ Status: {step.status}\n{response.content}")
+                
+                # If output was truncated, offer to show full output
+                artifacts = getattr(response, 'artifacts_created', {})
+                if artifacts and artifacts.get('full_stdout'):
+                    full_output = artifacts['full_stdout']
+                    if len(full_output.split('\n')) > 50:  # If more than 50 lines
+                        print(f"\n{self._format_help_text('💡 Output was truncated. To see full output, ask: \"show me the full output from that last command\"')}")
+                
                 self.state.add_to_history("system", f"Step '{step.step_goal}' completed with status: {step.status}.")
                 # Save flight recorder entry
                 self.state.save_flight_record()
                 if not response.success:
-                    print(f"🔄 Step failed. Attempting recovery...")
-                    
-                    # Try to recover by creating a recovery plan
-                    recovery_context = f"Previous command failed: {step.step_goal}\nError output: {response.content}\nOriginal user request: {plan.overall_goal}"
-                    recovery_prompt = f"The previous step failed. Please create a corrected plan to accomplish the original goal. Learn from this error: {recovery_context}"
-                    
-                    # Add recovery context to conversation history
+                    print(f"❌ Step failed. Execution halted.")
+                    print(f"{self._format_help_text('💡 You can try rephrasing your request or use a more specific command.')}")
                     self.state.add_to_history("system", f"Step failed: {step.step_goal}. Error: {response.content}")
-                    self.state.add_to_history("system", "Attempting automatic recovery...")
-                    
-                    # Generate recovery plan
-                    recovery_plan = self.cognitive_core.orchestrate(recovery_prompt, self.state)
-                    
-                    if recovery_plan and recovery_plan.steps:
-                        print(f"🛠️ Recovery plan:")
-                        print(f"Goal: {recovery_plan.overall_goal}")
-                        for j, recovery_step in enumerate(recovery_plan.steps):
-                            print(f"  {j+1}. {recovery_step.step_goal} (using {recovery_step.handler_name})")
-                        
-                        # Execute recovery plan
-                        print("\n🚀 Executing recovery plan...")
-                        self._execute_plan(recovery_plan)
-                        break  # Exit original plan after recovery attempt
-                    else:
-                        print("❌ Could not generate recovery plan. Halting execution.")
-                        break
+                    break
             except KeyboardInterrupt:
                 print("Execution interrupted by user.")
                 break
@@ -115,3 +187,6 @@ class SovereignAgent:
             except KeyboardInterrupt:
                 print("\nSession terminated by user.")
                 break
+        
+        # Save command history when session ends
+        self._save_history()

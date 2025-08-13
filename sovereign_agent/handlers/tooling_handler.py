@@ -31,6 +31,13 @@ class ToolingHandler(BaseHandler):
         if not command:
             return AgentResponse(success=False, content='No command specified.', status_update='no-command')
 
+        # Make context available but don't force constraints
+        step_context = args.get('__step_context', {})
+        previous_results = args.get('__previous_results', [])
+        
+        print(f"🔧 Command: {command}")
+
+        # Basic safety check using pattern matching
         if not self._is_safe(command):
             return AgentResponse(success=False, content=f'Command appears dangerous or disallowed: {command}', status_update='dangerous-command')
 
@@ -50,8 +57,12 @@ class ToolingHandler(BaseHandler):
                     if p.name == '.sovereign_flight.json':
                         continue
                     shutil.copy2(p, dest)
-            # execute command in tmpdir
-            result = subprocess.run(command, shell=True, capture_output=True, text=True, cwd=tmpdir, timeout=30)
+            # execute command in tmpdir using bash for advanced features
+            # Use bash explicitly for commands that might need process substitution, arrays, etc.
+            if any(feature in command for feature in ['<(', '>(', '${', '[[', 'declare', 'local']):
+                result = subprocess.run(command, shell=True, executable='/bin/bash', capture_output=True, text=True, cwd=tmpdir, timeout=30)
+            else:
+                result = subprocess.run(command, shell=True, capture_output=True, text=True, cwd=tmpdir, timeout=30)
             stdout = result.stdout or ''
             stderr = result.stderr or ''
             exit_code = result.returncode
@@ -72,7 +83,14 @@ class ToolingHandler(BaseHandler):
                 success=is_success, 
                 content=formatted_content, 
                 status_update='completed' if is_success else 'failed', 
-                artifacts_created={'sandbox_path': str(tmpdir), 'exit_code': exit_code, 'has_stderr': bool(stderr.strip())}
+                artifacts_created={
+                    'sandbox_path': str(tmpdir), 
+                    'exit_code': exit_code, 
+                    'has_stderr': bool(stderr.strip()),
+                    'full_stdout': stdout,
+                    'full_stderr': stderr,
+                    'command': command
+                }
             )
         except subprocess.TimeoutExpired:
             return AgentResponse(success=False, content='Command timed out.', status_update='timeout')

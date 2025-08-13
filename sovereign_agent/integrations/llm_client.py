@@ -179,6 +179,47 @@ class LLMClient:
             error=f"Failed after {self.max_retries} attempts. Last error: {last_error}"
         )
 
+    def call_with_function(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        function_schema: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Call LLM with function calling for guaranteed structured output."""
+        if not function_schema:
+            raise ValueError("Function schema is required")
+        
+        try:
+            if self.provider == "openai":
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    functions=[function_schema],
+                    function_call={"name": function_schema["name"]},
+                    temperature=0.0
+                )
+                
+                if response.choices[0].message.function_call:
+                    try:
+                        function_args = json.loads(response.choices[0].message.function_call.arguments)
+                        function_args["success"] = True
+                        return function_args
+                    except json.JSONDecodeError as e:
+                        return {"error": f"Invalid function arguments: {str(e)}", "success": False}
+                else:
+                    return {"error": "No function call in response", "success": False}
+                    
+            elif self.provider == "anthropic":
+                # Anthropic doesn't support function calling in the same way, fallback to structured output
+                return self.call_with_structured_output(system_prompt, user_prompt, function_schema.get("parameters", {}))
+                
+        except Exception as e:
+            logger.error(f"Function call failed: {e}")
+            return {"error": str(e), "success": False}
+
     def call_with_structured_output(
         self, 
         system_prompt: str, 

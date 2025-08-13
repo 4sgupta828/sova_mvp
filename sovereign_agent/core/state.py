@@ -38,6 +38,7 @@ class SharedSessionState:
 
     def update_artifact(self, key: str, value: Any):
         self.artifacts[key] = value
+    
 
     def save_flight_record(self):
         # append current snapshot

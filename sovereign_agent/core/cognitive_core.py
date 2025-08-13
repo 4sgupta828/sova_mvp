@@ -156,33 +156,55 @@ Your role is to translate user requests into **precise, optimized, multi-step Ta
 - Act as a **strategic planner** — not just a task lister
 - Ensure every step moves the agent measurably closer to the user's ultimate goal
 - Minimize redundant steps while preserving logical completeness
+- CRITICALLY VALIDATE all commands before including them in plans
 
 **CRITICAL REQUIREMENTS:**
-1. Generate ONLY valid JSON - no explanations, commentary, or extra text
-2. Every step must be achievable via exactly one handler call
-3. Include ALL required fields: overall_goal, steps (array), confidence (0.0-1.0), reasoning
-4. Each step must have: handler_name, step_goal, input_args (dict)
-5. Use only available handlers from capabilities list
-6. Be strategic - minimize redundant steps while ensuring completeness
+1. Every step must be achievable via exactly one handler call
+2. Include ALL required fields: overall_goal, steps (array), confidence (0.0-1.0), reasoning
+3. Each step must have: handler_name, step_goal, input_args (dict)
+4. Use only available handlers from capabilities list
+5. Be strategic - minimize redundant steps while ensuring completeness
+
+**COMMAND VALIDATION & SAFETY:**
+When generating ToolingHandler commands, ensure they are:
+- Safe (avoid destructive operations like rm -rf, dd, mkfs, shutdown, reboot)
+- Clear and simple (prefer straightforward commands over complex pipelines)
+- Reliable (will work consistently across environments)
+- Informative (provide useful, parseable output with context like filenames and line numbers)
+
+**CRITICAL: CONSTRAINT INHERITANCE**
+When user specifies ANY constraint in their request, ALL steps must honor it consistently:
+- "exclude venv" → Every step: find uses `! -path "./venv/*"`, grep uses `--exclude-dir=venv` 
+- "only Python files" → Every step operates on .py files specifically
+- "in src directory" → Every step limits scope to src/
+- "files modified today" → Every step includes recency filters
+
+NEVER let later steps ignore constraints from the user request. Parse the user's intent once, apply consistently throughout.
 
 **SAFETY & AUTONOMY RULES:**
 - Never skip an obvious prerequisite step
 - If ambiguity exists, insert a clarification or research step before execution
 - Prefer deterministic, low-risk actions early in the plan
 
-**RESPONSE FORMAT (JSON only):**
-{
-  "overall_goal": "Clear description of what will be accomplished",
-  "steps": [
-    {
-      "handler_name": "HandlerName",
-      "step_goal": "What this step achieves",
-      "input_args": {"key": "value"}
-    }
-  ],
-  "confidence": 0.8,
-  "reasoning": "Why this plan will work"
-}"""
+**COMMAND GENERATION BEST PRACTICES:**
+- For file searches: ALWAYS include filename and line numbers (use grep -n -H or awk with FILENAME:FNR)
+- For code searches: Show file context like "filename.py:42:def function_name():"
+- For multi-file operations: Use commands that clearly identify source files
+- CONSTRAINT INHERITANCE EXAMPLES:
+  * User: "exclude venv" → Step 1: `find . -name "*.py" ! -path "./venv/*"` → Step 2: `grep -rHn "pattern" . --exclude-dir=venv`
+  * User: "only in src" → Step 1: `find src -name "*.py"` → Step 2: `grep -rHn "pattern" src`
+  * User: "Python modules" → Step 1: `find . -name "*.py"` → Step 2: `grep -Hn "^import\|^from" *.py`
+- Examples:
+  * Search functions: grep -n -H "^def " *.py
+  * Search with context: find . -name "*.py" -exec grep -n -H "pattern" {} \;
+  * Count lines in functions: awk '/^def /{print FILENAME":"NR":"$0; start=NR} /^$/ && start {print FILENAME":"start"-"NR":"(NR-start)" lines"; start=0}' *.py
+
+**RESPONSE FORMAT:**
+Use the create_task_plan function to return a structured response with:
+- overall_goal: Clear description of what will be accomplished
+- steps: Array of steps, each with handler_name, step_goal, and input_args
+- confidence: Number between 0.0 and 1.0
+- reasoning: Why this plan will work"""
 
         user_prompt = f"""**ANALYZE REQUEST:** "{user_input}"
 
@@ -204,7 +226,7 @@ Structure: {', '.join(workspace_json.get('file_tree_summary', {}).get('files', [
 - Step D: Break the plan into atomic steps — each achievable via exactly one handler call
 - Step E: For each step, specify step_goal and input_args
 
-Generate a TaskPlan JSON that accomplishes the user's request using available handlers."""
+Use the create_task_plan function to generate a structured plan that accomplishes the user's request using available handlers."""
 
         return system_prompt, user_prompt
 
@@ -236,32 +258,72 @@ Generate a TaskPlan JSON that accomplishes the user's request using available ha
                 conversation
             )
             
-            # Get LLM client and make call
+            # Define the function schema for structured output
+            task_plan_schema = {
+                "name": "create_task_plan",
+                "description": "Create a structured task plan for the user request",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "overall_goal": {
+                            "type": "string",
+                            "description": "Clear description of what will be accomplished"
+                        },
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "handler_name": {
+                                        "type": "string",
+                                        "description": "Name of the handler to use"
+                                    },
+                                    "step_goal": {
+                                        "type": "string", 
+                                        "description": "What this step achieves"
+                                    },
+                                    "input_args": {
+                                        "type": "object",
+                                        "description": "Arguments for the handler"
+                                    }
+                                },
+                                "required": ["handler_name", "step_goal", "input_args"]
+                            }
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "minimum": 0.0,
+                            "maximum": 1.0,
+                            "description": "Confidence in the plan (0.0-1.0)"
+                        },
+                        "reasoning": {
+                            "type": "string",
+                            "description": "Why this plan will work"
+                        }
+                    },
+                    "required": ["overall_goal", "steps", "confidence", "reasoning"]
+                }
+            }
+
+            # Get LLM client and make structured call
             llm_client = self.llm.config_manager.get_client(LLMUseCase.PLANNING)
-            response = llm_client.call(system_prompt, user_prompt)
             
-            if not response.success:
-                logger.error(f"LLM call failed: {response.error}")
-                return None
-            
-            plan_text = response.content
-            
-            if not plan_text:
-                logger.error("LLM returned empty plan")
-                return None
-            
-            # Parse plan
+            # Try function calling first (for OpenAI), fallback to structured output
             try:
-                plan_data = json.loads(plan_text)
-            except json.JSONDecodeError as e:
-                logger.error(f"Invalid JSON from LLM: {e}")
+                plan_data = llm_client.call_with_function(system_prompt, user_prompt, task_plan_schema)
+            except Exception as e:
+                logger.warning(f"Function calling failed, trying structured output: {e}")
+                plan_data = llm_client.call_with_structured_output(system_prompt, user_prompt, task_plan_schema["parameters"])
+            
+            if not plan_data.get("success", False):
+                logger.error(f"Structured LLM call failed: {plan_data.get('error', 'Unknown error')}")
                 return None
             
-            # Validate plan structure
-            if not isinstance(plan_data, dict):
-                logger.error("Plan must be a dictionary")
-                return None
+            # Remove the success flag for validation
+            if "success" in plan_data:
+                del plan_data["success"]
                 
+            # Validate plan structure (should be guaranteed by schema but let's be safe)
             if not plan_data.get('steps'):
                 logger.warning("Plan has no steps")
                 return None

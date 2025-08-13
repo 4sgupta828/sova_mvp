@@ -16,8 +16,11 @@ class OutputFormatter:
     RESET = '\033[0m'
     
     @classmethod
-    def format_command_result(cls, command: str, exit_code: int, stdout: str, stderr: str, max_lines: int = 20) -> str:
+    def format_command_result(cls, command: str, exit_code: int, stdout: str, stderr: str, max_lines: int = 50) -> str:
         """Format command execution result for clean display."""
+        
+        # Enhance output with context if missing
+        stdout = cls._enhance_output_context(command, stdout)
         
         # Status indicator
         if exit_code == 0:
@@ -50,9 +53,14 @@ class OutputFormatter:
         """Clean up command for display."""
         # Remove extra whitespace
         command = ' '.join(command.split())
-        # Truncate very long commands
-        if len(command) > 80:
-            command = command[:77] + "..."
+        # Don't truncate commands - show them in full for clarity
+        # If very long (>200 chars), show on multiple lines for readability
+        if len(command) > 200:
+            # Break long commands at logical points (pipes, &&, ||)
+            for sep in [' | ', ' && ', ' || ', '; ']:
+                if sep in command:
+                    parts = command.split(sep)
+                    return f"{sep}\\n  ".join(parts)
         return command
     
     @classmethod
@@ -60,11 +68,18 @@ class OutputFormatter:
         """Format stdout/stderr output with truncation."""
         lines = output.strip().split('\n')
         
-        # Truncate if too many lines
+        # Smart truncation based on output size
         if len(lines) > max_lines:
-            displayed_lines = lines[:max_lines]
-            truncated_count = len(lines) - max_lines
-            displayed_lines.append(f"{cls.DIM}... ({truncated_count} more lines){cls.RESET}")
+            # Show first portion and last few lines for context
+            first_chunk = lines[:max_lines - 5]
+            last_chunk = lines[-3:]
+            truncated_count = len(lines) - max_lines + 2
+            
+            displayed_lines = first_chunk + [
+                f"{cls.DIM}",
+                f"... ({truncated_count} more lines) ...",
+                f"[Last few lines shown below]{cls.RESET}"
+            ] + last_chunk
             lines = displayed_lines
         
         # Format each line with proper indentation
@@ -103,6 +118,33 @@ class OutputFormatter:
     def format_plan_header(cls, overall_goal: str) -> str:
         """Format plan execution header."""
         return f"\n{cls.BOLD}🤖 Executing Plan:{cls.RESET} {overall_goal}"
+    
+    @classmethod
+    def _enhance_output_context(cls, command: str, output: str) -> str:
+        """Enhance output with missing context information."""
+        if not output or not output.strip():
+            return output
+        
+        # Check if output already has file context (filename:line_number: pattern)
+        lines = output.strip().split('\n')
+        has_context = False
+        for line in lines[:3]:  # Check first 3 lines
+            if ':' in line:
+                parts = line.split(':')
+                if len(parts) > 1 and parts[1].strip().isdigit():
+                    has_context = True
+                    break
+        
+        if has_context:
+            # Output already has context, return as-is
+            return output
+        
+        # If this looks like code search results without context, add helpful note
+        if ('def ' in output or 'class ' in output or 'import ' in output) and 'find' in command.lower():
+            context_note = f"{cls.DIM}Note: Output above lacks file context. For better results, use:\n  grep -n -H \"pattern\" *.py  # to see filename:line_number:match{cls.RESET}\n\n"
+            return context_note + output
+        
+        return output
     
     @classmethod
     def format_error(cls, error_msg: str) -> str:
