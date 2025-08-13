@@ -190,7 +190,9 @@ Your role is to translate user requests into **precise, optimized, multi-step Ta
 {json.dumps(capabilities, indent=2)}
 
 **WORKSPACE CONTEXT:**
-{json.dumps(workspace_json, indent=2)}
+Path: {workspace_json.get('path', 'unknown')}
+Files: {len(workspace_json.get('file_tree_summary', {}).get('files', []))} files
+Structure: {', '.join(workspace_json.get('file_tree_summary', {}).get('files', [])[:5]) + ('...' if len(workspace_json.get('file_tree_summary', {}).get('files', [])) > 5 else '')}
 
 **RECENT CONVERSATION:**
 {json.dumps(conversation[-3:], indent=2)}

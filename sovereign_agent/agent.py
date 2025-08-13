@@ -87,12 +87,7 @@ class SovereignAgent:
                 print(f"Goal: {task_plan.overall_goal}")
                 for i, step in enumerate(task_plan.steps):
                     print(f"  {i+1}. {step.step_goal} (using {step.handler_name})")
-                confirmation = input("Proceed? (Y/n): ").lower().strip()
-                if confirmation in ["y", "yes", ""]:
-                    self._execute_plan(task_plan)
-                else:
-                    print("Plan aborted by user.")
-                    self.state.add_to_history("system", "User aborted the proposed plan.")
+                self._execute_plan(task_plan)
             except KeyboardInterrupt:
                 print("\nSession terminated by user.")
                 break

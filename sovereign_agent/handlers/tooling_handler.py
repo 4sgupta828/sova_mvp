@@ -6,6 +6,7 @@ import re
 from sovereign_agent.handlers.base import BaseHandler
 from sovereign_agent.core.models import AgentResponse
 from sovereign_agent.core.state import SharedSessionState
+from sovereign_agent.utils.output_formatter import OutputFormatter
 from pathlib import Path
 
 # simple dangerous command pattern matcher
@@ -54,8 +55,10 @@ class ToolingHandler(BaseHandler):
             stdout = result.stdout or ''
             stderr = result.stderr or ''
             exit_code = result.returncode
-            content = f'Exit {exit_code}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}'
-            return AgentResponse(success=(exit_code==0), content=content, status_update='completed' if exit_code==0 else 'failed', artifacts_created={'sandbox_path': str(tmpdir)})
+            
+            # Format output using OutputFormatter for clean display
+            formatted_content = OutputFormatter.format_command_result(command, exit_code, stdout, stderr)
+            return AgentResponse(success=(exit_code==0), content=formatted_content, status_update='completed' if exit_code==0 else 'failed', artifacts_created={'sandbox_path': str(tmpdir)})
         except subprocess.TimeoutExpired:
             return AgentResponse(success=False, content='Command timed out.', status_update='timeout')
         except Exception as e:
